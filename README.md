@@ -1,32 +1,35 @@
-# Meteora Liquidity Helper v2
+# Meteora LP Scanner v3
 
-Userscript Tampermonkey qui affiche les pools Meteora (DLMM & DAMM v2) directement sur GMGN.ai et trade.padre.gg, trié par TVL puis volume.
+Userscript Tampermonkey qui affiche les pools Meteora DLMM directement sur GMGN.ai, trié par TVL puis volume.
 
 ## Fonctionnalités
 
-- **Pools DLMM & DAMM v2** depuis l'API publique Meteora
-- **Selector de période** : 24h, 6h, 1h, 5min (N/A si non dispo)
-- **Tri** : TVL desc → Volume desc
+- **Pools DLMM** depuis l'API publique Meteora
+- **Stats globales** : TVL total, Volume 24h, ratio Vol/TVL, Fees 24h
 - **Avertissements** :
   - Rouge : aucun LP trouvé (probable rug)
   - Jaune : TVL total < 10k$ (risque élevé)
   - Orange : volume 24h > 50× TVL (wash trading probable)
+- **Colonne Pool Type** : affiche `binStep / fee%` (ex: `100 / 2%`)
+- **Liens par pool** : Edge Meteora, LPAgent
+- **Liens par token** : GMGN, Deepnets, Bubblemaps
+- **Toggle MLP** fixe en bas à droite — panel ouvert uniquement sur les pages token
 - **Draggable** : le panel se déplace
-- **SPA-aware** : MutationObserver + patch pushState pour GMGN/Padre
+- **SPA-aware** : ferme le panel automatiquement quand on quitte une page token
 
 ## Installation
 
 1. Installer [Tampermonkey](https://www.tampermonkey.net/)
-2. Créer un nouveau script et coller le contenu de `meteora-liquidity-helper.user.js`
-3. Sauvegarder — le script s'active sur `gmgn.ai/*` et `trade.padre.gg/*`
+2. Sur Brave : activer **Autoriser les scripts utilisateur** dans les paramètres de l'extension
+3. Créer un nouveau script et coller le contenu de `meteora-liquidity-helper.user.js`
+4. Sauvegarder — le script s'active sur `gmgn.ai/*`
 
 ## API utilisée
 
-- `https://dlmm-api.meteora.ag/pair/all` — liste tous les pools DLMM
-- Fallback RPC `getProgramAccounts` sur le programme DAMM v2 si aucun pool DLMM trouvé
+- `https://pool-discovery-api.datapi.meteora.ag/pools` — top 1000 pools DLMM par volume, filtrés côté client par token
 
 ## Structure du panel
 
-| Type | TVL | Vol [période] | Fee/Step | Active Bin | Pool |
-|------|-----|---------------|----------|------------|------|
-| DLMM | $1.2M | $450K | 0.3% | ID 8472 | abc…xyz |
+| Pool Type | TVL | Vol 24h | Fees 24h | Links |
+|-----------|-----|---------|----------|-------|
+| 100 / 2% | $1.2M | $450K | $9K | Meteora · LPAgent |
