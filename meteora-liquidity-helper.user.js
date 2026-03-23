@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         Meteora LP Scanner - Open Source
 // @namespace    https://github.com/VladimirusRex/meteora-liquidity-helper
-// @version      3.0.0
+// @version      3.1.0
 // @description  Display Meteora DLMM pools sorted by TVL/volume. Anti-scam warnings, wash trade detection, GMGN integration.
 // @author       vladimirusrex
 // @match        https://gmgn.ai/*
-// @match        https://trade.padre.gg/*
 // @grant        GM_xmlhttpRequest
-// @connect      dlmm-api.meteora.ag
+// @connect      pool-discovery-api.datapi.meteora.ag
 // @connect      public-api.birdeye.so
 // @run-at       document-idle
 // ==/UserScript==
@@ -18,8 +17,9 @@
   console.log('[Meteora Helper] Script loaded ✓');
 
   // ─── CONFIG ──────────────────────────────────────────────────────────────────
-  const API_DLMM          = 'https://dlmm-api.meteora.ag/pair/all';
-  const METEORA_POOL_URL  = (address) => `https://www.meteora.ag/dlmm/${address}`;
+  // Nouvel endpoint Meteora (l'ancien dlmm-api.meteora.ag/pair/all est mort)
+  const API_DLMM          = 'https://pool-discovery-api.datapi.meteora.ag/pools?pool_type=dlmm&page_size=1000&sort_key=volume&sort_order=desc';
+  const METEORA_POOL_URL  = (address) => `https://edge.meteora.ag/dlmm/${address}`;
   const LPAGENT_POOL_URL  = (address) => `https://app.lpagent.io/pools/${address}`;
   const GMGN_TOKEN_URL    = (mint) => `https://gmgn.ai/sol/token/${mint}?ref=meteora-helper`;
   const DEEPNETS_TOKEN_URL = (mint) => `https://deepnets.ai/token/${mint}`;
@@ -27,20 +27,13 @@
 
   const TVL_LOW_THRESHOLD = 10_000;   // $ – warning shallow LP
   const WASH_TRADE_RATIO  = 50;       // volume24h / TVL > 50x → suspicious
-  const FETCH_TIMEOUT_MS  = 10_000;
+  const FETCH_TIMEOUT_MS  = 30_000;
 
-  // Pour volume 1h/5min real : intégrer Birdeye API
-  // (nécessite clé gratuite/limitée : https://public-api.birdeye.so/defi/history_price?address=...
-  //  mais rate limit strict – 100 req/min sur plan free)
-  const BIRDEYE_API_KEY = ''; // Mets ta clé ici pour activer le volume 1h Birdeye
-
-  const PANEL_ID       = 'meteora-lp-panel';
-  const VOLUME_PERIODS = ['24h', '6h', '1h', '5min'];
+  const PANEL_ID = 'meteora-lp-panel';
 
   // ─── STATE ───────────────────────────────────────────────────────────────────
-  let currentMint    = null;
-  let selectedPeriod = '24h';
-  let cachedPools    = null;
+  let currentMint = null;
+  let cachedPools = null;
   let isFetching     = false;
   let lastUrl        = location.href;
 
@@ -83,31 +76,8 @@
     return pools.reduce((sum, p) => sum + (p.volume_24h ?? 0), 0);
   }
 
-  function isValidMint(str) {
-    return /^[A-HJ-NP-Za-km-z1-9]{32,44}$/.test(str);
-  }
 
   // ─── BIRDEYE VOLUME (optionnel – nécessite clé API) ──────────────────────────
-
-  /**
-   * Fetch volume 1h depuis Birdeye si clé configurée, sinon skip.
-   * Rate limit : ~100 req/min sur plan free.
-   */
-  async function fetchBirdeyeVolume(mint) {
-    if (!BIRDEYE_API_KEY) return null;
-    const url = `https://public-api.birdeye.so/defi/history_price?address=${mint}&type=1H`;
-    try {
-      const data = await gmFetch(url, FETCH_TIMEOUT_MS, { 'X-API-KEY': BIRDEYE_API_KEY });
-      if (!data?.data) return null;
-      // Birdeye retourne des candles – somme le volume de la dernière heure
-      const items = data.data.items ?? [];
-      const lastHour = items.slice(-1)[0];
-      return lastHour?.v ?? null;
-    } catch (e) {
-      console.warn('[Meteora Helper] Birdeye volume fetch failed:', e.message);
-      return null;
-    }
-  }
 
   // ─── TOKEN MINT EXTRACTION ───────────────────────────────────────────────────
 
@@ -120,59 +90,6 @@
     match = path.match(/\/(?:token|trade)\/([A-HJ-NP-Za-km-z1-9]{32,44})/);
     if (match) return match[1];
     return null;
-  }
-
-  /**
-   * Scan DOM de façon agressive pour trouver un mint base58.
-   * Cible les classes courantes GMGN / Padre + attributs data-*.
-   */
-  function extractMintFromDOM() {
-    // 1) Attributs spécifiques et classes explicites
-    const attrSelectors = [
-      '[data-mint]',
-      '[data-address]',
-      '[data-contract]',
-      '.token-address',
-      '.mint-address',
-      '.contract-address',
-      '[class*="tokenAddress"]',
-      '[class*="mintAddress"]',
-      '[class*="contractAddress"]',
-      '[class*="token-address"]',
-      '[class*="mint-address"]',
-      '[class*="address"]',
-      '[class*="mint"]',
-      '[class*="contract"]',
-      'input[value]',
-    ];
-
-    for (const sel of attrSelectors) {
-      const elements = document.querySelectorAll(sel);
-      for (const el of elements) {
-        const text = (
-          el.getAttribute('data-mint') ||
-          el.getAttribute('data-address') ||
-          el.getAttribute('data-contract') ||
-          el.value ||
-          el.textContent ||
-          ''
-        ).trim();
-        if (isValidMint(text)) return text;
-      }
-    }
-
-    // 2) Scan textContent brut de tous les spans/divs/a (plus lent – dernier recours)
-    const candidates = document.querySelectorAll('span, div, p, a, code, small');
-    for (const el of candidates) {
-      const text = (el.textContent || '').trim();
-      if (isValidMint(text)) return text;
-    }
-
-    return null;
-  }
-
-  function getCurrentMint() {
-    return extractMintFromURL() || extractMintFromDOM();
   }
 
   // ─── FETCH HELPERS ───────────────────────────────────────────────────────────
@@ -193,9 +110,14 @@
           headers: extraHeaders,
           onload: (res) => {
             try {
+              if (res.status === 0 || res.status >= 400) {
+                reject(new Error(`HTTP ${res.status} from ${url}`));
+                return;
+              }
               resolve(JSON.parse(res.responseText));
             } catch (e) {
-              reject(new Error(`JSON parse error from ${url}`));
+              console.error('[Meteora Helper] Raw response:', res.status, res.responseText?.slice(0, 300));
+              reject(new Error(`JSON parse error from ${url} (status ${res.status})`));
             }
           },
           onerror:   () => reject(new Error(`Network error fetching ${url}`)),
@@ -227,30 +149,34 @@
    */
   async function fetchDLMMPools(tokenMint) {
     console.log('[Meteora Helper] Fetching DLMM pools for mint:', tokenMint);
-    const allPairs = await gmFetch(API_DLMM);
-    if (!Array.isArray(allPairs)) throw new Error('DLMM API returned unexpected format');
 
-    const filtered = allPairs
-      .filter((p) => p.mint_x === tokenMint || p.mint_y === tokenMint)
+    // Récupère les 1000 pools DLMM avec le plus de volume, puis filtre par mint côté client.
+    // L'API pool-discovery ne supporte pas de filtre côté serveur par token_x/token_y.
+    const data = await gmFetch(API_DLMM, FETCH_TIMEOUT_MS, { 'Accept': 'application/json' });
+    if (!data || !Array.isArray(data.data)) throw new Error('DLMM API returned unexpected format');
+
+    const filtered = data.data
+      .filter((p) => p.token_x?.address === tokenMint || p.token_y?.address === tokenMint)
       .map((p) => ({
-        type:        'DLMM',
-        address:     p.address,
-        tvl:         parseFloat(p.liquidity) || 0,
-        volume_24h:  parseFloat(p.trade_volume_24h) || 0,
-        // Granularité fine : capturée si l'API l'expose un jour
+        type:     'DLMM',
+        address:  p.pool_address,
+        tvl:      parseFloat(p.tvl) || 0,
+        volume_24h: parseFloat(p.volume) || 0,
         volume: {
-          '24h':  parseFloat(p.trade_volume_24h) || null,
-          '6h':   p.trade_volume_6h ? parseFloat(p.trade_volume_6h) : null,
-          '1h':   p.trade_volume_1h ? parseFloat(p.trade_volume_1h) : null,
-          '5min': p.trade_volume_5m ? parseFloat(p.trade_volume_5m) : null,
+          '24h':  parseFloat(p.volume)   || null,
+          '6h':   null,
+          '1h':   null,
+          '5min': null,
         },
-        feeTier:     p.base_fee_percentage != null ? `${p.base_fee_percentage}%` : null,
-        binStep:     p.bin_step ?? null,
-        activeBinId: p.active_id ?? null,
-        mintA:       p.mint_x,
-        mintB:       p.mint_y,
-        nameA:       p.name?.split('-')[0] ?? '',
-        nameB:       p.name?.split('-')[1] ?? '',
+        feeTier:  p.fee_pct != null ? `${p.fee_pct}%` : null,
+        binStep:  p.dlmm_params?.bin_step ?? null,
+        fees_24h: parseFloat(p.fee) || 0,
+        fees_tvl: parseFloat(p.fee_tvl_ratio) || null,
+        mintA:    p.token_x?.address,
+        mintB:    p.token_y?.address,
+        nameA:    p.token_x?.symbol ?? '',
+        nameB:    p.token_y?.symbol ?? '',
+        createdAt: p.pool_created_at ?? null,
       }))
       .sort((a, b) => (b.tvl ?? 0) - (a.tvl ?? 0));
 
@@ -498,42 +424,6 @@
   /**
    * Panel "No mint detected" avec input manuel pour coller un CA.
    */
-  function renderNoMint() {
-    removePanel();
-    injectStyles();
-    const panel = document.createElement('div');
-    panel.id = PANEL_ID;
-    panel.innerHTML = `
-      <div class="mlp-header">
-        <span class="mlp-title">Meteora LP Scanner</span>
-        <div class="mlp-controls">
-          <button class="mlp-close" id="mlp-close-btn">✕</button>
-        </div>
-      </div>
-      <div class="mlp-body">
-        <div class="mlp-warning yellow" style="margin-bottom:12px;">
-          ⚠ No mint detected on this page — colle le CA manuellement :
-        </div>
-        <div class="mlp-manual-input">
-          <input id="mlp-manual-ca" type="text" placeholder="Colle le contract address (base58)..." />
-          <button class="mlp-btn" id="mlp-manual-go">Fetch</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(panel);
-    document.getElementById('mlp-close-btn').onclick = () => { removePanel(); syncToggleOff(); };
-    document.getElementById('mlp-manual-go').onclick = () => {
-      const val = document.getElementById('mlp-manual-ca').value.trim();
-      if (isValidMint(val)) {
-        currentMint = val;
-        cachedPools = null;
-        runWithMint(val);
-      } else {
-        document.getElementById('mlp-manual-ca').style.borderColor = '#ef4444';
-      }
-    };
-    makeDraggable(panel);
-  }
 
   /**
    * Panel principal avec table pools + stats + warnings.
@@ -542,12 +432,12 @@
     removePanel();
     injectStyles();
 
-    const sorted       = sortPools(pools, selectedPeriod);
+    const sorted       = sortPools(pools, '24h');
     const totalTVL     = calculateTotalTVL(pools);
     const totalVol24h  = calculateTotalVolume24h(pools);
+    const totalFees24h = pools.reduce((sum, p) => sum + (p.fees_24h ?? 0), 0);
     const ratio        = totalTVL > 0 ? totalVol24h / totalTVL : 0;
-    const volLabel     = `Vol ${selectedPeriod}`;
-    const isNAperiod   = selectedPeriod !== '24h';
+    const volLabel     = 'Vol 24h';
 
     // ── Warning banners ──
     let warningsHTML = '';
@@ -590,24 +480,19 @@
           <div class="mlp-stat-value ${ratioColor}">${totalTVL > 0 ? ratio.toFixed(1) + 'x' : 'N/A'}</div>
         </div>
         <div class="mlp-stat">
+          <div class="mlp-stat-label">Fees 24h</div>
+          <div class="mlp-stat-value green">${totalFees24h > 0 ? formatUSD(totalFees24h) : 'N/A'}</div>
+        </div>
+        <div class="mlp-stat">
           <div class="mlp-stat-label">Pools</div>
           <div class="mlp-stat-value">${pools.length}</div>
         </div>
       </div>` : '';
 
-    // ── Period select ──
-    const selectOptions = VOLUME_PERIODS.map(
-      (p) => `<option value="${p}" ${p === selectedPeriod ? 'selected' : ''}>${p}</option>`
-    ).join('');
-
     // ── Table rows ──
     const rowsHTML = sorted.map((pool) => {
-      const vol = getVolumeForPeriod(pool, selectedPeriod);
-
-      // Pour les périodes non-24h : toujours N/A (API DLMM 24h only)
-      const volDisplay = isNAperiod
-        ? `<span class="mlp-na">N/A (API DLMM 24h only)</span>`
-        : (vol != null ? formatUSD(vol) : `<span class="mlp-na">N/A</span>`);
+      const vol = pool.volume_24h;
+      const volDisplay = vol != null && vol > 0 ? formatUSD(vol) : `<span class="mlp-na">N/A</span>`;
 
       const isWash    = pool.tvl > 0 && (pool.volume_24h ?? 0) / pool.tvl > WASH_TRADE_RATIO;
       const washBadge = isWash ? `<span class="mlp-wash"> ⚡</span>` : '';
@@ -617,11 +502,16 @@
         ? `${pool.binStep ?? '?'} / ${fee ?? '?'}`
         : '<span class="mlp-na">N/A</span>';
 
+      const feesDisplay = pool.fees_24h > 0
+        ? formatUSD(pool.fees_24h)
+        : '<span class="mlp-na">N/A</span>';
+
       return `
         <tr>
           <td>${feeTierDisplay}</td>
           <td>${formatUSD(pool.tvl)}</td>
           <td>${volDisplay}${washBadge}</td>
+          <td>${feesDisplay}</td>
           <td>
             <a class="mlp-link" href="${METEORA_POOL_URL(pool.address)}" target="_blank" title="${pool.address}">Meteora</a>
             · <a class="mlp-link" href="${LPAGENT_POOL_URL(pool.address)}" target="_blank">LPAgent</a>
@@ -652,7 +542,6 @@
       <div class="mlp-header">
         <span class="mlp-title">Meteora LP — ${shortMint}</span>
         <div class="mlp-controls">
-          <select id="mlp-period-select">${selectOptions}</select>
           <button class="mlp-btn" id="mlp-refresh-btn" title="Re-fetch DLMM pools">⟳</button>
           ${gmgnBtnHTML}
           <button class="mlp-close" id="mlp-close-btn">✕</button>
@@ -668,6 +557,7 @@
               <th>Pool Type</th>
               <th>TVL</th>
               <th>${volLabel}</th>
+              <th>Fees 24h</th>
               <th>Links</th>
             </tr>
           </thead>
@@ -695,12 +585,6 @@
     const ts  = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
     const tsEl = document.getElementById('mlp-last-updated');
     if (tsEl) tsEl.textContent = ts;
-
-    // Period select
-    document.getElementById('mlp-period-select').onchange = (e) => {
-      selectedPeriod = e.target.value;
-      renderPanel(cachedPools || [], tokenMint);
-    };
 
     // Refresh button – force re-fetch
     document.getElementById('mlp-refresh-btn').onclick = () => {
@@ -794,17 +678,17 @@
     }
   }
 
+  function isTokenPage() {
+    return !!extractMintFromURL();
+  }
+
   async function run() {
     if (isFetching) return;
 
-    const mint = getCurrentMint();
+    // N'ouvre le panel que sur une page token (mint dans l'URL)
+    if (!isTokenPage()) return;
 
-    if (!mint) {
-      console.log('[Meteora Helper] No mint detected on this page');
-      renderNoMint();
-      return;
-    }
-
+    const mint = extractMintFromURL();
     console.log('[Meteora Helper] Mint extrait :', mint);
 
     // Même mint déjà chargé → re-render depuis cache sans re-fetch
@@ -830,7 +714,13 @@
         lastUrl     = newUrl;
         cachedPools = null;
         currentMint = null;
-        setTimeout(run, 500);
+        // Ferme le panel si on quitte une page token
+        if (!extractMintFromURL()) {
+          removePanel();
+          syncToggleOff();
+        } else {
+          setTimeout(run, 500);
+        }
       }
     }
 
@@ -845,7 +735,8 @@
     const observer = new MutationObserver(() => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        const mint = getCurrentMint();
+        if (!isTokenPage()) return;
+        const mint = extractMintFromURL();
         if (mint && mint !== currentMint) {
           cachedPools = null;
           run();
