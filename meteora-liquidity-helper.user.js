@@ -18,7 +18,9 @@
 
   // ─── CONFIG ──────────────────────────────────────────────────────────────────
   // Nouvel endpoint Meteora (l'ancien dlmm-api.meteora.ag/pair/all est mort)
-  const API_DLMM          = 'https://pool-discovery-api.datapi.meteora.ag/pools?pool_type=dlmm&page_size=1000&sort_key=volume&sort_order=desc';
+  // Deux requêtes en parallèle (top volume + top TVL) pour maximiser la couverture
+  const API_DLMM_VOL = 'https://pool-discovery-api.datapi.meteora.ag/pools?pool_type=dlmm&page_size=1000&sort_key=volume&sort_order=desc';
+  const API_DLMM_TVL = 'https://pool-discovery-api.datapi.meteora.ag/pools?pool_type=dlmm&page_size=1000&sort_key=tvl&sort_order=desc';
   const METEORA_POOL_URL  = (address) => `https://edge.meteora.ag/dlmm/${address}`;
   const LPAGENT_POOL_URL  = (address) => `https://app.lpagent.io/pools/${address}`;
   const GMGN_TOKEN_URL    = (mint) => `https://gmgn.ai/sol/token/${mint}?ref=meteora-helper`;
@@ -150,12 +152,24 @@
   async function fetchDLMMPools(tokenMint) {
     console.log('[Meteora Helper] Fetching DLMM pools for mint:', tokenMint);
 
-    // Récupère les 1000 pools DLMM avec le plus de volume, puis filtre par mint côté client.
-    // L'API pool-discovery ne supporte pas de filtre côté serveur par token_x/token_y.
-    const data = await gmFetch(API_DLMM, FETCH_TIMEOUT_MS, { 'Accept': 'application/json' });
-    if (!data || !Array.isArray(data.data)) throw new Error('DLMM API returned unexpected format');
+    // Deux requêtes en parallèle (top volume + top TVL) pour maximiser la couverture.
+    // L'API ne supporte pas de filtre côté serveur par token_x/token_y.
+    const headers = { 'Accept': 'application/json' };
+    const [dataVol, dataTvl] = await Promise.all([
+      gmFetch(API_DLMM_VOL, FETCH_TIMEOUT_MS, headers),
+      gmFetch(API_DLMM_TVL, FETCH_TIMEOUT_MS, headers),
+    ]);
+    if (!dataVol?.data || !dataTvl?.data) throw new Error('DLMM API returned unexpected format');
 
-    const filtered = data.data
+    // Fusion et déduplication par pool_address
+    const seen = new Set();
+    const allPools = [...dataVol.data, ...dataTvl.data].filter((p) => {
+      if (seen.has(p.pool_address)) return false;
+      seen.add(p.pool_address);
+      return true;
+    });
+
+    const filtered = allPools
       .filter((p) => p.token_x?.address === tokenMint || p.token_y?.address === tokenMint)
       .map((p) => ({
         type:     'DLMM',
